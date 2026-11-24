@@ -34,7 +34,6 @@ export function ChatApp() {
     { id: newId(), role: "assistant", content: ATULYA_GREETING },
   ]);
   const [kundli, setKundli] = useState<KundliDetails | null>(null);
-  const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [mode, setMode] = useState<"live" | "demo" | null>(null);
@@ -90,16 +89,27 @@ export function ChatApp() {
   const send = useCallback(
     async (raw: string) => {
       const text = raw.trim();
-      if (!text || streaming) return;
+      if (!text) {
+        toast.message("Kuch likho toh sahi 😄");
+        textareaRef.current?.focus();
+        return;
+      }
+      if (streaming) {
+        toast.message("Atulya abhi reply kar raha hai… ruko zara 🙏");
+        return;
+      }
 
       const userMsg: ChatMessage = { id: newId(), role: "user", content: text };
       const assistantId = newId();
       const history = [...messages, userMsg];
 
       setMessages([...history, { id: assistantId, role: "assistant", content: "" }]);
-      setInput("");
+      const el = textareaRef.current;
+      if (el) {
+        el.value = "";
+        el.style.height = "auto";
+      }
       setStreaming(true);
-      requestAnimationFrame(resizeTextarea);
 
       const controller = new AbortController();
       abortRef.current = controller;
@@ -167,7 +177,7 @@ export function ChatApp() {
         setStreaming(false);
       }
     },
-    [messages, streaming, resizeTextarea],
+    [messages, streaming],
   );
 
   const handleKundliSubmit = (details: KundliDetails) => {
@@ -181,7 +191,11 @@ export function ChatApp() {
     setMessages([{ id: newId(), role: "assistant", content: ATULYA_GREETING }]);
     setKundli(null);
     setMode(null);
-    setInput("");
+    const el = textareaRef.current;
+    if (el) {
+      el.value = "";
+      el.style.height = "auto";
+    }
     toast.success("Nayi shuruaat. 🔮");
   };
 
@@ -369,26 +383,28 @@ export function ChatApp() {
                 <form
                   onSubmit={(e) => {
                     e.preventDefault();
-                    void send(input);
+                    void send(textareaRef.current?.value ?? "");
                   }}
                   className="flex items-end gap-2 rounded-2xl border border-white/10 bg-white/[0.04] p-2 focus-within:border-amber-300/40"
                 >
                   <Textarea
                     ref={textareaRef}
                     rows={1}
-                    value={input}
-                    onChange={(e) => {
-                      setInput(e.target.value);
-                      resizeTextarea();
-                    }}
+                    defaultValue=""
+                    onChange={resizeTextarea}
+                    onInput={resizeTextarea}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault();
-                        void send(input);
+                        void send(e.currentTarget.value);
                       }
                     }}
+                    enterKeyHint="send"
+                    autoComplete="off"
+                    autoCorrect="on"
+                    autoCapitalize="sentences"
                     placeholder="Atulya se kuch bhi poochho..."
-                    className="max-h-[140px] min-h-[38px] resize-none border-0 bg-transparent px-2 py-2 text-[0.95rem] text-violet-50 shadow-none placeholder:text-violet-200/30 focus-visible:ring-0"
+                    className="max-h-[140px] min-h-[38px] resize-none border-0 bg-transparent px-2 py-2 text-base text-violet-50 shadow-none placeholder:text-violet-200/30 focus-visible:ring-0 sm:text-[0.95rem]"
                   />
                   {streaming ? (
                     <Button
@@ -404,9 +420,8 @@ export function ChatApp() {
                     <Button
                       type="submit"
                       size="icon"
-                      disabled={!input.trim()}
                       aria-label="Bhejo"
-                      className="h-10 w-10 shrink-0 rounded-xl bg-gradient-to-br from-amber-300 to-orange-400 text-[#1a1024] hover:from-amber-200 hover:to-orange-300 disabled:opacity-30"
+                      className="h-10 w-10 shrink-0 rounded-xl bg-gradient-to-br from-amber-300 to-orange-400 text-[#1a1024] hover:from-amber-200 hover:to-orange-300 active:scale-95"
                     >
                       <Send className="h-4 w-4" />
                     </Button>
