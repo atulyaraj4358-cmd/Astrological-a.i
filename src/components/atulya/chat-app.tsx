@@ -11,7 +11,8 @@ import { formatKundliMessage, type ChatMessage, type KundliDetails } from "@/lib
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
-const STORAGE_KEY = "atulya-chat-v1";
+const STORAGE_KEY = "atulya-chat-v2";
+const DRAFT_KEY = "atulya-draft-v2";
 
 const QUICK_PROMPTS = [
   { label: "Future partner se baat karwao", icon: Wand2 },
@@ -25,7 +26,7 @@ type StoredState = {
 };
 
 function newId() {
-  return Math.random().toString(36).slice(2);
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 export function ChatApp() {
@@ -33,15 +34,30 @@ export function ChatApp() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     { id: newId(), role: "assistant", content: ATULYA_GREETING },
   ]);
+  const messagesRef = useRef<ChatMessage[]>(messages);
   const [kundli, setKundli] = useState<KundliDetails | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [mode, setMode] = useState<"live" | "demo" | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const busyRef = useRef(false);
+
+  const commit = useCallback(
+    (updater: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => {
+      const next =
+        typeof updater === "function"
+          ? (updater as (prev: ChatMessage[]) => ChatMessage[])(messagesRef.current)
+          : updater;
+      messagesRef.current = next;
+      setMessages(next);
+    },
+    [],
+  );
 
   useEffect(() => {
     try {
@@ -49,9 +65,15 @@ export function ChatApp() {
       if (raw) {
         const parsed = JSON.parse(raw) as StoredState;
         if (Array.isArray(parsed.messages) && parsed.messages.length > 0) {
+          messagesRef.current = parsed.messages;
           setMessages(parsed.messages);
         }
         if (parsed.kundli) setKundli(parsed.kundli);
+      }
+      const savedDraft = sessionStorage.getItem(DRAFT_KEY);
+      if (savedDraft) {
+        setDraft(savedDraft);
+        if (textareaRef.current) textareaRef.current.value = savedDraft;
       }
     } catch {
       // ignore corrupted storage
@@ -62,11 +84,24 @@ export function ChatApp() {
   useEffect(() => {
     if (!mounted) return;
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ messages, kundli }));
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ messages, kundli } satisfies StoredState),
+      );
     } catch {
       // storage may be full or blocked
     }
   }, [messages, kundli, mounted]);
+
+  useEffect(() => {
+    if (!mounted) return;
+    try {
+      if (draft) sessionStorage.setItem(DRAFT_KEY, draft);
+      else sessionStorage.removeItem(DRAFT_KEY);
+    } catch {
+      // ignore
+    }
+  }, [draft, mounted]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -80,9 +115,20 @@ export function ChatApp() {
     el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
   }, []);
 
+  const setComposerText = useCallback(
+    (value: string) => {
+      setDraft(value);
+      const el = textareaRef.current;
+      if (el && el.value !== value) el.value = value;
+      resizeTextarea();
+    },
+    [resizeTextarea],
+  );
+
   const stop = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
+    busyRef.current = false;
     setStreaming(false);
   }, []);
 
@@ -94,22 +140,17 @@ export function ChatApp() {
         textareaRef.current?.focus();
         return;
       }
-      if (streaming) {
-        toast.message("Atulya abhi reply kar raha hai… ruko zara 🙏");
-        return;
-      }
+      if (busyRef.current) return;
+
+      busyRef.current = true;
+      setStreaming(true);
 
       const userMsg: ChatMessage = { id: newId(), role: "user", content: text };
       const assistantId = newId();
-      const history = [...messages, userMsg];
+      const history = [...messagesRef.current, userMsg];
 
-      setMessages([...history, { id: assistantId, role: "assistant", content: "" }]);
-      const el = textareaRef.current;
-      if (el) {
-        el.value = "";
-        el.style.height = "auto";
-      }
-      setStreaming(true);
+      commit([...history, { id: assistantId, role: "assistant", content: "" }]);
+      setComposerText("");
 
       const controller = new AbortController();
       abortRef.current = controller;
@@ -139,13 +180,14 @@ export function ChatApp() {
           const { done, value } = await reader.read();
           if (done) break;
           acc += decoder.decode(value, { stream: true });
-          setMessages((prev) =>
-            prev.map((m) => (m.id === assistantId ? { ...m, content: acc } : m)),
+          const snapshot = acc;
+          commit((prev) =>
+            prev.map((m) => (m.id === assistantId ? { ...m, content: snapshot } : m)),
           );
         }
 
         if (!acc.trim()) {
-          setMessages((prev) =>
+          commit((prev) =>
             prev.map((m) =>
               m.id === assistantId
                 ? { ...m, content: "Kuch gadbad ho gayi. Ek baar phir bhejo? 🙏" }
@@ -155,7 +197,7 @@ export function ChatApp() {
         }
       } catch (err) {
         if ((err as Error).name === "AbortError") {
-          setMessages((prev) =>
+          commit((prev) =>
             prev.map((m) =>
               m.id === assistantId && !m.content
                 ? { ...m, content: "_Ruk gaya. Jab chaho, phir se poochho._" }
@@ -164,20 +206,23 @@ export function ChatApp() {
           );
         } else {
           toast.error("Atulya abhi connect nahi ho paya. Thodi der baad try karo.");
-          setMessages((prev) =>
+          commit((prev) =>
             prev.map((m) =>
               m.id === assistantId && !m.content
                 ? { ...m, content: "Network ki dikkat lag rahi hai. Ek baar phir bhejo? 🙏" }
                 : m,
             ),
           );
+          setComposerText(text);
         }
       } finally {
         abortRef.current = null;
+        busyRef.current = false;
         setStreaming(false);
+        textareaRef.current?.focus();
       }
     },
-    [messages, streaming],
+    [commit, setComposerText],
   );
 
   const handleKundliSubmit = (details: KundliDetails) => {
@@ -188,14 +233,10 @@ export function ChatApp() {
 
   const reset = () => {
     stop();
-    setMessages([{ id: newId(), role: "assistant", content: ATULYA_GREETING }]);
+    commit([{ id: newId(), role: "assistant", content: ATULYA_GREETING }]);
     setKundli(null);
     setMode(null);
-    const el = textareaRef.current;
-    if (el) {
-      el.value = "";
-      el.style.height = "auto";
-    }
+    setComposerText("");
     toast.success("Nayi shuruaat. 🔮");
   };
 
@@ -216,7 +257,7 @@ export function ChatApp() {
   const inSimulation = lastAssistant?.content.includes("[Virtual Simulation") ?? false;
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-[#0a0614] text-violet-50">
+    <div className="relative min-h-[100dvh] overflow-hidden bg-[#0a0614] text-violet-50">
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute -top-40 left-1/2 h-[420px] w-[720px] -translate-x-1/2 rounded-full bg-amber-500/10 blur-[120px]" />
         <div className="absolute top-1/3 -left-32 h-[360px] w-[360px] rounded-full bg-violet-600/15 blur-[110px]" />
@@ -231,7 +272,7 @@ export function ChatApp() {
         />
       </div>
 
-      <div className="relative mx-auto flex h-screen w-full max-w-6xl flex-col px-3 py-4 sm:px-6">
+      <div className="relative mx-auto flex h-[100dvh] w-full max-w-6xl flex-col px-3 pt-4 sm:px-6">
         <header className="mb-4 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="relative flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-amber-300 via-orange-400 to-fuchsia-500 shadow-lg shadow-amber-500/20">
@@ -365,15 +406,14 @@ export function ChatApp() {
               </div>
             </div>
 
-            <div className="border-t border-white/10 bg-[#0d0818]/60 px-3 py-3 sm:px-5">
+            <div className="border-t border-white/10 bg-[#0d0818]/60 px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-5">
               <div className="mx-auto max-w-3xl">
                 <div className="mb-2 flex gap-2 overflow-x-auto pb-1 lg:hidden">
                   {QUICK_PROMPTS.map((p) => (
                     <button
                       key={p.label}
                       onClick={() => void send(p.label)}
-                      disabled={streaming}
-                      className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] text-violet-100/70 disabled:opacity-40"
+                      className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] text-violet-100/70 active:bg-white/10"
                     >
                       {p.label}
                     </button>
@@ -383,18 +423,18 @@ export function ChatApp() {
                 <form
                   onSubmit={(e) => {
                     e.preventDefault();
-                    void send(textareaRef.current?.value ?? "");
+                    void send(textareaRef.current?.value ?? draft);
                   }}
                   className="flex items-end gap-2 rounded-2xl border border-white/10 bg-white/[0.04] p-2 focus-within:border-amber-300/40"
                 >
                   <Textarea
                     ref={textareaRef}
                     rows={1}
-                    defaultValue=""
-                    onChange={resizeTextarea}
-                    onInput={resizeTextarea}
+                    defaultValue={draft}
+                    onChange={(e) => setComposerText(e.currentTarget.value)}
+                    onInput={(e) => setComposerText(e.currentTarget.value)}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey) {
+                      if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                         e.preventDefault();
                         void send(e.currentTarget.value);
                       }
@@ -429,7 +469,7 @@ export function ChatApp() {
                 </form>
 
                 <p className="mt-2 text-center text-[10px] text-violet-200/30">
-                  Atulya · Vedic guidance, not medical or financial advice · Simulacrum mode clearly labelled
+                  Atulya · Vedic guidance, not medical or financial advice · Simulacrum mode clearly labelled · v2
                 </p>
               </div>
             </div>
