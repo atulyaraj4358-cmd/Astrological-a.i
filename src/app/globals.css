@@ -125,3 +125,38 @@
 nextjs-portal {
   display: none !important;
 }
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  body {
+    background-color: #0a0614;
+  }
+  ::selection {
+    background: rgb(252 211 77 / 0.3);
+    color: #fffbeb;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(255 255 255 / 0.12) transparent;
+  }
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgb(255 255 255 / 0.12);
+  border-radius: 9999px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: rgb(255 255 255 / 0.2);
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
